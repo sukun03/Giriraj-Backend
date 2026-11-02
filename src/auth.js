@@ -37,6 +37,8 @@ export function issueToken(user) {
   );
 }
 
+console.log("sdfd")
+
 export async function requireAuth(req, res, next) {
   const header = req.get('authorization');
   if (!header?.startsWith('Bearer ')) {
