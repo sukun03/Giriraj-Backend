@@ -37,7 +37,7 @@ export function issueToken(user) {
   );
 }
 
-console.log("sdfd")
+
 
 export async function requireAuth(req, res, next) {
   const header = req.get('authorization');
@@ -54,7 +54,7 @@ export async function requireAuth(req, res, next) {
     });
   } catch {
     return next(new HttpError(401, 'INVALID_TOKEN', 'The access token is invalid or expired.'));
-  }
+  } 
 
   if (typeof payload !== 'object' || !payload.sub || !['user', 'admin'].includes(payload.role)) {
     return next(new HttpError(401, 'INVALID_TOKEN', 'The access token is invalid or expired.'));
