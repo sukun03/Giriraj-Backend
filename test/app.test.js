@@ -1,5 +1,6 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -128,6 +129,46 @@ test('only REST API and Swagger routes are exposed; frontend origins are allow-l
     .type('form')
     .send({ name: 'Riya Sharma', email: 'riya@example.com' });
   assert.notEqual(urlEncoded.status, 201);
+});
+
+test('production allows requests without an origin when CORS_ORIGINS is unset', () => {
+  const productionEnv = {
+    ...process.env,
+    NODE_ENV: 'production',
+    VERCEL: '1',
+    DATABASE_URL: 'postgres://postgres:postgres@127.0.0.1:1/postgres',
+    JWT_SECRET: 'test-secret-with-more-than-thirty-two-characters',
+  };
+  delete productionEnv.CORS_ORIGINS;
+
+  execFileSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import app from './src/app.js';
+    import { closeDatabase } from './src/db.js';
+
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise((resolve, reject) => {
+      server.once('listening', resolve);
+      server.once('error', reject);
+    });
+
+    try {
+      const address = server.address();
+      const url = \`http://127.0.0.1:\${address.port}/\`;
+      const serverRequest = await fetch(url);
+      assert.equal(serverRequest.status, 200);
+
+      const browserRequest = await fetch(url, {
+        headers: { Origin: 'https://untrusted.example' },
+      });
+      assert.equal(browserRequest.headers.get('access-control-allow-origin'), null);
+    } finally {
+      await new Promise((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+      await closeDatabase();
+    }
+  `], { env: productionEnv, stdio: 'pipe' });
 });
 
 test('complete user, inquiry, moderation, and admin flow uses PostgreSQL', async () => {

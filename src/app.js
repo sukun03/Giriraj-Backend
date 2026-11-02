@@ -48,10 +48,6 @@ for (const origin of allowedOrigins) {
     throw new Error(`CORS_ORIGINS entries must be plain HTTP(S) origins without paths: ${origin}`);
   }
 }
-if (isProduction && allowedOrigins.length === 0) {
-  throw new Error('Set CORS_ORIGINS to your deployed React frontend origin in production.');
-}
-
 app.disable('x-powered-by');
 app.set(
   'trust proxy',

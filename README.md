@@ -31,7 +31,7 @@ Vercel detects the default-exported Express app in `src/app.js` and serves its r
 3. Add these Vercel environment variables:
    - `JWT_SECRET`: a private random secret of at least 32 characters.
    - `CRON_SECRET`: a private random secret of at least 32 characters; Vercel uses it to authorize scheduled cleanup of expired password-reset tokens.
-   - `CORS_ORIGINS`: the exact deployed React frontend origin, including `https://` and no path. Multiple origins can be comma-separated.
+   - `CORS_ORIGINS` (optional until a frontend is deployed): when set, list only the exact frontend origins, including `https://` and no path. Multiple origins can be comma-separated.
 4. Deploy. The Vercel build validates the environment, applies migrations, and fails clearly if configuration or the database is unavailable.
 5. Create or recover the administrator only through the owner CLI below. There is no public admin-creation or admin-password-reset endpoint.
 
@@ -92,7 +92,7 @@ After login or registration, keep the returned `accessToken` in frontend memory 
 
 ### Configure frontend CORS
 
-Set `CORS_ORIGINS` in the backend `.env` (local) or backend hosting environment (production) to a comma-separated allow-list of exact React website origins. Include scheme and port when present; do not include URL paths or use `*`.
+Set `CORS_ORIGINS` in the backend `.env` (local) or backend hosting environment (production) to a comma-separated allow-list of exact React website origins. Include scheme and port when present; do not include URL paths or use `*`. It is optional until a frontend is deployed. Without it, requests without an `Origin` header are allowed, while browser origins receive no CORS permission.
 
 ```dotenv
 # Local Vite development server
@@ -102,7 +102,7 @@ CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 # CORS_ORIGINS=https://girirajboyspg.example
 ```
 
-Restart the backend after changing the allow-list. Production refuses to start without an explicit allow-list. The API permits JSON REST methods and the `Authorization` header; it does not enable cookie credentials. Do not configure Axios with `withCredentials` for this bearer-token API.
+Restart the backend after changing the allow-list. Only configured origins receive CORS permission; origins are never wildcarded. The API permits JSON REST methods and the `Authorization` header; it does not enable cookie credentials. Do not configure Axios with `withCredentials` for this bearer-token API.
 
 ## Owner-controlled administrator credentials
 
@@ -175,6 +175,6 @@ List endpoints accept `limit` (1–100, default 20) and `offset` (default 0).
 - Passwords use bcrypt hashing. Inputs are validated and SQL is parameterized. Admin routes require a live account lookup and admin role, not just a user-supplied role.
 - JWTs expire after 15 minutes; logout and owner credential changes revoke active sessions. Admin credentials can only be changed through the owner-controlled CLI.
 - Helmet, exact-origin CORS, payload limits, rate limits, JSON validation errors, and server-side error logging are enabled.
-- The embedded PostgreSQL mode is for local/simple single-instance development. For deployment, use managed PostgreSQL, HTTPS, a strong secret manager, backups, SMTP provider credentials, and the exact React frontend origin in `CORS_ORIGINS`. Vercel builds fail unless `DATABASE_URL` (or `POSTGRES_URL`), `JWT_SECRET`, `CRON_SECRET`, and `CORS_ORIGINS` are configured.
+- The embedded PostgreSQL mode is for local/simple single-instance development. For deployment, use managed PostgreSQL, HTTPS, a strong secret manager, backups, and SMTP provider credentials. Add the exact React frontend origin to `CORS_ORIGINS` when a frontend is deployed. Vercel builds require `DATABASE_URL` (or `POSTGRES_URL`), `JWT_SECRET`, and `CRON_SECRET`; `CORS_ORIGINS` is optional.
 
 The API does not include email verification or payment processing.
