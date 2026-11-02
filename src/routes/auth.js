@@ -35,9 +35,9 @@ router.post('/register', async (req, res) => {
   }
   const passwordHash = await hashPassword(input.password);
   const { rows } = await pool.query(
-    `INSERT INTO users (name, email, password_hash, expires_at)
-     VALUES ($1, $2, $3, NOW() + INTERVAL '30 days')
-     RETURNING id, name, email, role, created_at, auth_version, expires_at`,
+    `INSERT INTO users (name, email, password_hash)
+     VALUES ($1, $2, $3)
+     RETURNING id, name, email, role, created_at, auth_version`,
     [input.name, input.email, passwordHash],
   );
   const user = publicUser(rows[0]);
@@ -47,7 +47,7 @@ router.post('/register', async (req, res) => {
 router.post('/login', async (req, res) => {
   const input = loginSchema.parse(req.body);
   const { rows } = await pool.query(
-    `SELECT id, name, email, role, password_hash, disabled_at, created_at, auth_version, expires_at
+    `SELECT id, name, email, role, password_hash, disabled_at, created_at, auth_version
      FROM users WHERE email = $1`,
     [input.email],
   );
@@ -58,10 +58,6 @@ router.post('/login', async (req, res) => {
   if (user.disabled_at) {
     throw new HttpError(403, 'ACCOUNT_DISABLED', 'This account has been disabled.');
   }
-  if (user.role === 'user' && (!user.expires_at || new Date(user.expires_at) <= new Date())) {
-    throw new HttpError(403, 'ACCOUNT_EXPIRED', 'This account has expired.');
-  }
-
   const safeUser = publicUser(user);
   return res.json({
     user: safeUser,
@@ -75,9 +71,7 @@ router.post('/password/forgot', async (req, res) => {
   const { email } = forgotPasswordSchema.parse(req.body);
   getMailConfig();
   const { rows } = await pool.query(
-    `SELECT id FROM users
-     WHERE email = $1 AND disabled_at IS NULL
-       AND (role = 'admin' OR expires_at > NOW())`,
+    "SELECT id FROM users WHERE email = $1 AND role = 'user' AND disabled_at IS NULL",
     [email],
   );
 
@@ -115,8 +109,7 @@ router.post('/password/reset', async (req, res) => {
   await transaction(async (client) => {
     const { rows } = await client.query(
       `SELECT t.user_id FROM password_reset_tokens t
-       JOIN users u ON u.id = t.user_id AND u.disabled_at IS NULL
-         AND (u.role = 'admin' OR u.expires_at > NOW())
+       JOIN users u ON u.id = t.user_id AND u.role = 'user' AND u.disabled_at IS NULL
        WHERE t.token_hash = $1 AND t.expires_at > NOW()
        FOR UPDATE`,
       [tokenHash],
@@ -138,44 +131,12 @@ router.post('/password/reset', async (req, res) => {
   });
 });
 
-router.post('/admin/bootstrap', async (req, res) => {
-  const expectedKey = process.env.ADMIN_BOOTSTRAP_KEY;
-  if (!expectedKey || expectedKey.length < 32) {
-    throw new HttpError(503, 'BOOTSTRAP_NOT_CONFIGURED', 'Admin bootstrap is not configured.');
-  }
-  const providedKey = req.get('x-admin-bootstrap-key') ?? '';
-  const expectedBuffer = Buffer.from(expectedKey);
-  const providedBuffer = Buffer.from(providedKey);
-  if (providedBuffer.length !== expectedBuffer.length
-      || !crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {
-    throw new HttpError(401, 'INVALID_BOOTSTRAP_KEY', 'The admin bootstrap key is invalid.');
-  }
-
-  const input = registerSchema.parse(req.body);
-  const passwordHash = await hashPassword(input.password);
-  const userRow = await transaction(async (client) => {
-    await client.query('SELECT pg_advisory_xact_lock($1)', [7_431_025]);
-    const { rows: admins } = await client.query(
-      "SELECT id FROM users WHERE role = 'admin' LIMIT 1",
-    );
-    if (admins.length) {
-      throw new HttpError(409, 'ADMIN_ALREADY_EXISTS', 'An administrator account has already been created.');
-    }
-    const { rows } = await client.query(
-      `INSERT INTO users (name, email, password_hash, role)
-       VALUES ($1, $2, $3, 'admin')
-       RETURNING id, name, email, role, created_at`,
-      [input.name, input.email, passwordHash],
-    );
-    return rows[0];
-  });
-  const user = publicUser(userRow);
-  return res.status(201).json({
-    user,
-    accessToken: issueToken(user),
-    tokenType: 'Bearer',
-    expiresIn: 900,
-  });
+router.post('/logout', requireAuth, async (req, res) => {
+  await pool.query(
+    'UPDATE users SET auth_version = auth_version + 1 WHERE id = $1',
+    [req.auth.userId],
+  );
+  return res.status(204).end();
 });
 
 router.get('/me', requireAuth, async (req, res) => {

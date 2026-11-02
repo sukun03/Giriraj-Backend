@@ -16,13 +16,14 @@ CREATE TABLE IF NOT EXISTS inquiries (
     email VARCHAR(254) NOT NULL,
     phone VARCHAR(30) NOT NULL,
     message VARCHAR(3000) NOT NULL,
+    form_data JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '30 days')
+    status VARCHAR(12) NOT NULL DEFAULT 'new'
+        CHECK (status IN ('new', 'contacted', 'resolved'))
 );
 
 CREATE INDEX IF NOT EXISTS inquiries_created_idx ON inquiries (created_at DESC);
-CREATE INDEX IF NOT EXISTS inquiries_expires_idx ON inquiries (expires_at);
 
 CREATE TABLE IF NOT EXISTS reviews (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

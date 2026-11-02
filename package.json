@@ -11,6 +11,8 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "db:migrate": "node scripts/migrate.js",
+    "admin": "node scripts/admin.js",
+    "vercel-build": "node scripts/vercel-build.js",
     "test": "node --test"
   },
   "dependencies": {

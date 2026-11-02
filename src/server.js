@@ -18,10 +18,8 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
 await migrate();
 await pool.query('SELECT 1');
 const initialCleanup = await cleanupExpiredData();
-if (initialCleanup.users || initialCleanup.inquiries) {
-  console.log(
-    `Removed ${initialCleanup.users} expired account(s) and ${initialCleanup.inquiries} expired inquiry(ies).`,
-  );
+if (initialCleanup.passwordResetTokens) {
+  console.log(`Removed ${initialCleanup.passwordResetTokens} expired password reset token(s).`);
 }
 const server = app.listen(port, () => {
   console.log(`PG Stay API listening on http://localhost:${port} (${databaseMode})`);
@@ -30,10 +28,8 @@ const server = app.listen(port, () => {
 const cleanupTimer = setInterval(async () => {
   try {
     const result = await cleanupExpiredData();
-    if (result.users || result.inquiries) {
-      console.log(
-        `Removed ${result.users} expired account(s) and ${result.inquiries} expired inquiry(ies).`,
-      );
+    if (result.passwordResetTokens) {
+      console.log(`Removed ${result.passwordResetTokens} expired password reset token(s).`);
     }
   } catch (error) {
     console.error('Data retention cleanup failed:', error);

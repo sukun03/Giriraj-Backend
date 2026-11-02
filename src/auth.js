@@ -65,22 +65,24 @@ export async function requireAuth(req, res, next) {
   }
   const userId = parsedUserId.data;
   const { rows } = await pool.query(
-    `SELECT role, disabled_at, auth_version, expires_at
-     FROM users WHERE id = $1`,
+    'SELECT role, disabled_at, auth_version FROM users WHERE id = $1',
     [userId],
   );
   if (!rows[0] || rows[0].disabled_at) {
     return next(new HttpError(401, 'ACCOUNT_UNAVAILABLE', 'This account is unavailable.'));
-  }
-  if (rows[0].role === 'user'
-      && (!rows[0].expires_at || new Date(rows[0].expires_at) <= new Date())) {
-    return next(new HttpError(401, 'ACCOUNT_EXPIRED', 'This account has expired.'));
   }
   if (payload.ver !== rows[0].auth_version) {
     return next(new HttpError(401, 'INVALID_TOKEN', 'The access token is invalid or expired.'));
   }
   req.auth = { userId, role: rows[0].role };
   return next();
+}
+
+export function optionalAuth(req, res, next) {
+  if (!req.get('authorization')) {
+    return next();
+  }
+  return requireAuth(req, res, next);
 }
 
 export function requireAdmin(req, res, next) {

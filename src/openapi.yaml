@@ -8,26 +8,22 @@ info:
     response uses JSON unless the response is empty (HTTP 204). Expand an endpoint,
     select **Try it out**, enter the example data, and select **Execute**.
 
-    ## First-time setup
-    1. Run `npm run setup`, then `npm start` in the project directory.
-    2. Open `/api/auth/admin/bootstrap`. Copy `ADMIN_BOOTSTRAP_KEY` from the local
-       server `.env` file into the `X-Admin-Bootstrap-Key` header field.
-    3. Enter the admin name, email, and a unique password of at least 12 characters.
-       Bootstrap works only once; it is disabled after the first admin is created.
-    4. Copy `accessToken` from the successful response. Click **Authorize** above,
-       paste the token, and confirm. Admin-only operations will now be authorized.
+    ## Administrator access
+    Administrator accounts are created and recovered only through the private
+    `npm run admin -- create|change-email|reset-password` command. There is no
+    public admin-creation or admin-password-reset endpoint. Sign in at
+    `POST /api/auth/login`, then use **Authorize** with its access token.
 
     ## Try the normal user flow
     Submit a contact form with public `POST /api/inquiries`; it does not need a token.
     Register with `POST /api/auth/register` or sign in with `POST /api/auth/login`.
-    Authorize with the returned access token to submit a review. Reviews begin as
-    pending and only appear in the public list after an admin approves them.
+    Submit a review with `POST /api/reviews`; reviews begin as pending and only
+    appear in the public list after an admin approves them.
 
     Access tokens expire after 15 minutes. Sign in again to get a fresh token.
     Configure SMTP_HOST, SMTP_PORT, and EMAIL_FROM in `.env` to enable password reset.
-    Normal accounts and contact enquiries expire 30 days after they are created.
-    Admin accounts and all reviews are retained; when an account expires, its review
-    remains but its author is anonymized as "Former resident". Pagination uses `limit` (1–100,
+    Accounts, contact enquiries, and reviews are not automatically deleted.
+    Pagination uses `limit` (1–100,
     default 20) and `offset` (default 0). Error responses use the documented `error`
     object; validation errors include a `details` array.
 servers:
@@ -51,6 +47,31 @@ paths:
                 type: object
                 properties:
                   status: { type: string, example: ok }
+  /api/cron/cleanup:
+    get:
+      tags: [Administration]
+      summary: Remove expired password-reset tokens (scheduled job)
+      description: "Requires `Authorization: Bearer <CRON_SECRET>`. Vercel invokes this endpoint daily."
+      security: [{ cronSecret: [] }]
+      responses:
+        '200':
+          description: Expired password-reset tokens removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  removed:
+                    type: object
+                    properties:
+                      passwordResetTokens: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503':
+          description: Scheduled cleanup secret is not configured
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /api/auth/register:
     post:
       tags: [Authentication]
@@ -146,9 +167,10 @@ paths:
       security: []
   /api/auth/admin/bootstrap:
     post:
+      deprecated: true
       tags: [Authentication]
-      summary: Create the first admin only
-      description: Requires the X-Admin-Bootstrap-Key value in the server .env file. Use the resulting accessToken with Swagger's Authorize button. This operation permanently fails after an admin exists.
+      summary: Removed; administrator accounts are managed by the owner CLI
+      description: This public endpoint has been removed. Use the private owner CLI to create or recover administrator credentials.
       parameters:
         - in: header
           name: X-Admin-Bootstrap-Key
@@ -166,7 +188,7 @@ paths:
               password: "Use-a-unique-password-123"
       responses:
         '201':
-          description: First administrator created. Save the returned token to use admin endpoints.
+          description: Legacy response; this endpoint now returns 404.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthResponse' }
@@ -183,6 +205,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409':
           description: An admin already exists
+        '404': { $ref: '#/components/responses/NotFound' }
       security: []
   /api/auth/me:
     get:
@@ -200,11 +223,19 @@ paths:
                 properties:
                   user: { $ref: '#/components/schemas/PublicUser' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Revoke all sessions for the current account
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: All active access tokens have been revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /api/inquiries:
     post:
       tags: [Inquiries]
       summary: Submit the website contact form
-      description: Public endpoint. Inquiry data is automatically removed after 30 days.
+      description: Public endpoint. Submissions are retained until an administrator deletes them.
       requestBody:
         required: true
         content:
@@ -228,24 +259,64 @@ paths:
                   email: riya@example.com
                   phone: "+91-9876543210"
                   message: "I would like to know whether a single room is available from December."
+                  status: new
                   created_at: "2026-11-02T10:00:00.000Z"
-                  expires_at: "2026-12-02T10:00:00.000Z"
+                  updated_at: "2026-11-02T10:00:00.000Z"
         '400': { $ref: '#/components/responses/BadRequest' }
       security: []
     get:
       tags: [Inquiries]
-      summary: List unexpired inquiries (admin)
+      summary: Search and list all submissions (admin)
+      description: Search name, email, phone, and message with q. Filter by ISO timestamp from/to and status. Sort newest or oldest; no age limit applies.
       security: [{ bearerAuth: [] }]
       parameters:
         - { $ref: '#/components/parameters/Limit' }
         - { $ref: '#/components/parameters/Offset' }
+        - in: query
+          name: q
+          schema: { type: string, maxLength: 200 }
+        - in: query
+          name: from
+          schema: { type: string, format: date-time }
+        - in: query
+          name: to
+          schema: { type: string, format: date-time }
+        - in: query
+          name: status
+          schema: { type: string, enum: [new, contacted, resolved] }
+        - in: query
+          name: sort
+          schema: { type: string, enum: [newest, oldest], default: newest }
       responses:
         '200':
-          description: Paginated list of inquiries that have not expired
+          description: Paginated list of all matching retained submissions
           content:
             application/json:
               schema: { $ref: '#/components/schemas/InquiryPage' }
         '403': { $ref: '#/components/responses/Forbidden' }
+  /api/inquiries/{id}/status:
+    patch:
+      tags: [Inquiries]
+      summary: Update submission status (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [new, contacted, resolved] }
+      responses:
+        '200':
+          description: Updated submission
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InquiryResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/inquiries/{id}:
     parameters:
       - { $ref: '#/components/parameters/Id' }
@@ -263,7 +334,7 @@ paths:
     put:
       tags: [Inquiries]
       summary: Replace an inquiry (admin)
-      description: Send all inquiry fields; this replaces the saved values without extending the original 30-day expiration.
+      description: Replace the saved form fields. The original submission timestamp is retained.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -300,15 +371,17 @@ paths:
       security: []
     post:
       tags: [Reviews]
-      summary: Submit a review (signed-in user)
-      description: New reviews are pending until an administrator approves them.
-      security: [{ bearerAuth: [] }]
+      summary: Submit a review
+      description: Public submissions require name, rating, and comment. Email is optional and private. Signed-in users may omit name. Reviews are rate-limited and pending until approved by an administrator.
+      security: []
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/ReviewInput' }
             example:
+              name: Riya Sharma
+              email: riya@example.com
               rating: 5
               comment: "The rooms are clean, and the staff are very helpful."
       responses:
@@ -317,7 +390,6 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ReviewResponse' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
   /api/reviews/{id}:
     parameters:
       - { $ref: '#/components/parameters/Id' }
@@ -330,7 +402,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ReviewInput' }
+            schema: { $ref: '#/components/schemas/ReviewUpdateInput' }
       responses:
         '200':
           description: Updated review
@@ -340,10 +412,11 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [Reviews]
-      summary: Delete your own review or any review as admin
+      summary: Delete any review (admin only)
       security: [{ bearerAuth: [] }]
       responses:
         '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
   /api/admin/reviews:
     get:
@@ -402,7 +475,7 @@ paths:
     get:
       tags: [Administration]
       summary: List registered users (admin)
-      description: Returns active, unexpired user accounts. Expired users are removed automatically; administrator accounts are permanent and are not listed here.
+      description: Returns all regular user accounts, including disabled accounts. Administrator accounts are managed separately by the owner CLI.
       security: [{ bearerAuth: [] }]
       parameters:
         - { $ref: '#/components/parameters/Limit' }
@@ -446,6 +519,11 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    cronSecret:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: Set this to `Bearer <CRON_SECRET>` for the scheduled cleanup endpoint.
   parameters:
     Id:
       in: path
@@ -511,7 +589,24 @@ components:
         email: { type: string, format: email, maxLength: 254 }
         phone: { type: string, minLength: 5, maxLength: 30, example: "+91-9876543210" }
         message: { type: string, minLength: 10, maxLength: 3000 }
+      additionalProperties:
+        oneOf:
+          - { type: string, maxLength: 3000 }
+          - { type: number }
+          - { type: boolean }
+          - { type: string, nullable: true }
+          - type: array
+            maxItems: 100
+            items: { type: string, maxLength: 3000 }
     ReviewInput:
+      type: object
+      required: [rating, comment]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100, description: Required for public submissions; signed-in users may omit it. }
+        email: { type: string, format: email, maxLength: 254, description: Optional and visible only to administrators. }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        comment: { type: string, minLength: 5, maxLength: 2000 }
+    ReviewUpdateInput:
       type: object
       required: [rating, comment]
       properties:
@@ -547,7 +642,6 @@ components:
         role: { type: string, example: user }
         disabled_at: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
-        expires_at: { type: string, format: date-time, nullable: true, description: Null for administrators; 30 days after registration for regular users. }
     Inquiry:
       type: object
       properties:
@@ -556,9 +650,13 @@ components:
         email: { type: string, format: email }
         phone: { type: string }
         message: { type: string }
+        form_data:
+          type: object
+          description: Additional validated top-level form fields submitted with the inquiry.
+          additionalProperties: true
+        status: { type: string, enum: [new, contacted, resolved] }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-        expires_at: { type: string, format: date-time, description: Automatically 30 days after submission. }
     InquiryResponse:
       type: object
       properties:
@@ -568,6 +666,7 @@ components:
       properties:
         limit: { type: integer, example: 20 }
         offset: { type: integer, example: 0 }
+        total: { type: integer, example: 305 }
     InquiryPage:
       type: object
       properties:

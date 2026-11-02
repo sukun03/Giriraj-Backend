@@ -27,7 +27,8 @@ await new Promise((resolve, reject) => {
 });
 process.env.PGLITE_DATA_DIR = path.join(testDataDir, 'database', 'postgres');
 process.env.JWT_SECRET = 'test-secret-with-more-than-thirty-two-characters';
-process.env.ADMIN_BOOTSTRAP_KEY = 'test-bootstrap-key-with-more-than-thirty-two-characters';
+process.env.OWNER_CONTROL_KEY = 'test-owner-key-with-more-than-thirty-two-characters';
+process.env.CRON_SECRET = 'test-cron-secret-with-more-than-thirty-two-characters';
 process.env.SMTP_HOST = '127.0.0.1';
 process.env.SMTP_PORT = String(smtpServer.server.address().port);
 process.env.SMTP_SECURE = 'false';
@@ -51,6 +52,27 @@ test('health endpoint responds', async () => {
   const response = await request(app).get('/health');
   assert.equal(response.status, 200);
   assert.deepEqual(response.body, { status: 'ok' });
+});
+
+test('Vercel serverless entrypoint serves the Express application', async () => {
+  const { default: handler } = await import('../src/app.js');
+  assert.equal(handler, app);
+  const response = await request(handler).get('/health');
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body, { status: 'ok' });
+});
+
+test('scheduled cleanup requires its secret and removes expired data', async () => {
+  const unauthorized = await request(app).get('/api/cron/cleanup');
+  assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorized.body.error.code, 'INVALID_CRON_SECRET');
+
+  const authorized = await request(app)
+    .get('/api/cron/cleanup')
+    .set('Authorization', `Bearer ${process.env.CRON_SECRET}`);
+  assert.equal(authorized.status, 200);
+  assert.equal(authorized.body.status, 'ok');
+  assert.deepEqual(authorized.body.removed, { passwordResetTokens: 0 });
 });
 
 test('Swagger JSON and interactive UI are served', async () => {
@@ -97,46 +119,97 @@ test('only REST API and Swagger routes are exposed; frontend origins are allow-l
 });
 
 test('complete user, inquiry, moderation, and admin flow uses PostgreSQL', async () => {
-  const bootstrap = await request(app)
+  const { createAdminAccount, changeAdminEmail, resetAdminPassword } =
+    await import('../src/admin-credentials.js');
+  await createAdminAccount({
+    name: 'Site Admin',
+    email: 'admin@example.com',
+    password: 'An-Admin-Password-123',
+  });
+  const removedBootstrap = await request(app)
     .post('/api/auth/admin/bootstrap')
-    .set('X-Admin-Bootstrap-Key', process.env.ADMIN_BOOTSTRAP_KEY)
-    .send({
-      name: 'Site Admin',
-      email: 'admin@example.com',
-      password: 'An-Admin-Password-123',
-    });
-  assert.equal(bootstrap.status, 201);
-  const adminToken = bootstrap.body.accessToken;
-  const adminHeaders = { Authorization: `Bearer ${adminToken}` };
+    .send({ name: 'Unauthorized Admin', email: 'unauthorized@example.com', password: 'Another-Password-123' });
+  assert.equal(removedBootstrap.status, 404);
+  const adminLogin = await request(app).post('/api/auth/login').send({
+    email: 'admin@example.com',
+    password: 'An-Admin-Password-123',
+  });
+  assert.equal(adminLogin.status, 200);
+  const initialAdminToken = adminLogin.body.accessToken;
+  const initialAdminHeaders = { Authorization: `Bearer ${initialAdminToken}` };
 
-  const secondBootstrap = await request(app)
-    .post('/api/auth/admin/bootstrap')
-    .set('X-Admin-Bootstrap-Key', process.env.ADMIN_BOOTSTRAP_KEY)
-    .send({
+  await changeAdminEmail('owner@example.com');
+  await resetAdminPassword('A-new-owner-password-123');
+  const revokedAdminSession = await request(app)
+    .get('/api/inquiries')
+    .set(initialAdminHeaders);
+  assert.equal(revokedAdminSession.status, 401);
+  const adminResetRequest = await request(app)
+    .post('/api/auth/password/forgot')
+    .send({ email: 'owner@example.com' });
+  assert.equal(adminResetRequest.status, 202);
+  assert.equal(deliveredEmails.length, 0);
+  const oldAdminLogin = await request(app).post('/api/auth/login').send({
+    email: 'admin@example.com',
+    password: 'An-Admin-Password-123',
+  });
+  assert.equal(oldAdminLogin.status, 401);
+
+  const recoveredAdminLogin = await request(app).post('/api/auth/login').send({
+    email: 'owner@example.com',
+    password: 'A-new-owner-password-123',
+  });
+  assert.equal(recoveredAdminLogin.status, 200);
+  assert.equal(Object.hasOwn(recoveredAdminLogin.body, 'password'), false);
+  const adminToken = recoveredAdminLogin.body.accessToken;
+  const adminHeaders = { Authorization: `Bearer ${adminToken}` };
+  await assert.rejects(
+    () => createAdminAccount({
       name: 'Second Admin',
       email: 'second-admin@example.com',
       password: 'Another-Admin-Password-123',
-    });
-  assert.equal(secondBootstrap.status, 409);
+    }),
+    { message: /administrator account already exists/i },
+  );
+
+  const invalidNestedFormField = await request(app).post('/api/inquiries').send({
+    name: 'Riya Sharma',
+    email: 'riya@example.com',
+    phone: '+91-9876543210',
+    message: 'Please tell me about available rooms for December.',
+    roomDetails: { roomType: 'Single' },
+  });
+  assert.equal(invalidNestedFormField.status, 400);
 
   const inquiry = await request(app).post('/api/inquiries').send({
     name: 'Riya Sharma',
     email: 'RIYA@example.com',
     phone: '+91-9876543210',
     message: 'Please tell me about available rooms for December.',
+    roomType: 'Single',
+    occupants: 2,
+    requestedAmenities: ['WiFi', 'Laundry'],
   });
   assert.equal(inquiry.status, 201);
   assert.equal(inquiry.body.inquiry.email, 'riya@example.com');
-  assert.ok(new Date(inquiry.body.inquiry.expires_at) > new Date());
-  const retentionWindow = new Date(inquiry.body.inquiry.expires_at)
-    - new Date(inquiry.body.inquiry.created_at);
-  assert.ok(Math.abs(retentionWindow - 30 * 24 * 60 * 60 * 1000) < 1000);
+  assert.equal(inquiry.body.inquiry.status, 'new');
+  assert.deepEqual(inquiry.body.inquiry.form_data, {
+    roomType: 'Single',
+    occupants: 2,
+    requestedAmenities: ['WiFi', 'Laundry'],
+  });
+  assert.ok(new Date(inquiry.body.inquiry.created_at).getTime() > 0);
 
   const inquiryPage = await request(app)
-    .get('/api/inquiries')
+    .get('/api/inquiries?q=Riya&status=new&sort=oldest')
     .set(adminHeaders);
   assert.equal(inquiryPage.status, 200);
   assert.equal(inquiryPage.body.inquiries.length, 1);
+  assert.equal(inquiryPage.body.pagination.total, 1);
+  const customFieldSearch = await request(app)
+    .get('/api/inquiries?q=WiFi')
+    .set(adminHeaders);
+  assert.equal(customFieldSearch.body.pagination.total, 1);
   const inquiryId = inquiry.body.inquiry.id;
 
   const forbidden = await request(app)
@@ -153,12 +226,11 @@ test('complete user, inquiry, moderation, and admin flow uses PostgreSQL', async
   const userToken = registration.body.accessToken;
   const userHeaders = { Authorization: `Bearer ${userToken}` };
   const { default: pool } = await import('../src/db.js');
-  const accountRetention = await pool.query(
-    'SELECT expires_at FROM users WHERE id = $1',
+  const userCreatedAt = await pool.query(
+    'SELECT created_at FROM users WHERE id = $1',
     [registration.body.user.id],
   );
-  const accountRetentionWindow = new Date(accountRetention.rows[0].expires_at) - new Date();
-  assert.ok(Math.abs(accountRetentionWindow - 30 * 24 * 60 * 60 * 1000) < 1000);
+  assert.ok(new Date(userCreatedAt.rows[0].created_at).getTime() > 0);
 
   const me = await request(app).get('/api/auth/me').set(userHeaders);
   assert.equal(me.status, 200);
@@ -168,6 +240,13 @@ test('complete user, inquiry, moderation, and admin flow uses PostgreSQL', async
     .get('/api/inquiries')
     .set(userHeaders);
   assert.equal(deniedAdminAccess.status, 403);
+  const attemptedAdminRegistration = await request(app).post('/api/auth/register').send({
+    name: 'Public Admin',
+    email: 'public-admin@example.com',
+    password: 'A-public-admin-password-123',
+    role: 'admin',
+  });
+  assert.equal(attemptedAdminRegistration.status, 400);
 
   const submittedReview = await request(app)
     .post('/api/reviews')
@@ -176,6 +255,25 @@ test('complete user, inquiry, moderation, and admin flow uses PostgreSQL', async
   assert.equal(submittedReview.status, 201);
   assert.equal(submittedReview.body.review.status, 'pending');
   const reviewId = submittedReview.body.review.id;
+  const deniedReviewDeletion = await request(app)
+    .delete(`/api/reviews/${reviewId}`)
+    .set(userHeaders);
+  assert.equal(deniedReviewDeletion.status, 403);
+  const guestReview = await request(app).post('/api/reviews').send({
+    name: 'Guest Reviewer',
+    email: 'guest@example.com',
+    rating: 4,
+    comment: 'A clean and comfortable place to stay.',
+  });
+  assert.equal(guestReview.status, 201);
+  assert.equal(guestReview.body.review.status, 'pending');
+  assert.equal(Object.hasOwn(guestReview.body.review, 'author_email'), false);
+  const missingGuestName = await request(app).post('/api/reviews').send({
+    rating: 4,
+    comment: 'A guest review without a reviewer name.',
+  });
+  assert.equal(missingGuestName.status, 400);
+  const guestReviewId = guestReview.body.review.id;
 
   const publicBeforeApproval = await request(app).get('/api/reviews');
   assert.equal(publicBeforeApproval.body.reviews.length, 0);
@@ -189,6 +287,22 @@ test('complete user, inquiry, moderation, and admin flow uses PostgreSQL', async
   const publicAfterApproval = await request(app).get('/api/reviews');
   assert.equal(publicAfterApproval.body.reviews.length, 1);
   assert.equal(publicAfterApproval.body.reviews[0].author, 'Asha Kumar');
+  const approvedGuestReview = await request(app)
+    .patch(`/api/admin/reviews/${guestReviewId}/status`)
+    .set(adminHeaders)
+    .send({ status: 'approved' });
+  assert.equal(approvedGuestReview.status, 200);
+  const publicReviews = await request(app).get('/api/reviews');
+  assert.equal(publicReviews.body.reviews.length, 2);
+  assert.equal(publicReviews.body.reviews.some((review) => 'author_email' in review), false);
+  const privateReview = await request(app)
+    .get('/api/admin/reviews?status=approved')
+    .set(adminHeaders);
+  assert.equal(privateReview.status, 200);
+  assert.equal(
+    privateReview.body.reviews.find((review) => review.id === guestReviewId).author_email,
+    'guest@example.com',
+  );
 
   const oldUserToken = userHeaders.Authorization;
   const forgotPassword = await request(app)
@@ -259,18 +373,22 @@ test('complete user, inquiry, moderation, and admin flow uses PostgreSQL', async
       message: 'Please contact me about an available single room.',
     });
   assert.equal(updateInquiry.status, 200);
-  assert.equal(
-    updateInquiry.body.inquiry.expires_at,
-    inquiry.body.inquiry.expires_at,
-  );
-  await pool.query(
-    "UPDATE inquiries SET expires_at = NOW() - INTERVAL '1 second' WHERE id = $1",
-    [inquiryId],
-  );
-  const expiredInquiryPage = await request(app)
-    .get('/api/inquiries')
+  assert.equal(updateInquiry.body.inquiry.created_at, inquiry.body.inquiry.created_at);
+  const updatedInquiryStatus = await request(app)
+    .patch(`/api/inquiries/${inquiryId}/status`)
+    .set(adminHeaders)
+    .send({ status: 'contacted' });
+  assert.equal(updatedInquiryStatus.status, 200);
+  assert.equal(updatedInquiryStatus.body.inquiry.status, 'contacted');
+  const invalidInquiryStatus = await request(app)
+    .patch(`/api/inquiries/${inquiryId}/status`)
+    .set(adminHeaders)
+    .send({ status: 'deleted' });
+  assert.equal(invalidInquiryStatus.status, 400);
+  const reversedDateFilter = await request(app)
+    .get('/api/inquiries?from=2025-01-01T00:00:00.000Z&to=2024-01-01T00:00:00.000Z')
     .set(adminHeaders);
-  assert.equal(expiredInquiryPage.body.inquiries.length, 0);
+  assert.equal(reversedDateFilter.status, 400);
 
   const disabled = await request(app)
     .patch(`/api/admin/users/${registration.body.user.id}/disable`)
@@ -279,6 +397,15 @@ test('complete user, inquiry, moderation, and admin flow uses PostgreSQL', async
   assert.equal(disabled.status, 200);
   const disabledAccount = await request(app).get('/api/auth/me').set(userHeaders);
   assert.equal(disabledAccount.status, 401);
+  const reenabled = await request(app)
+    .patch(`/api/admin/users/${registration.body.user.id}/disable`)
+    .set(adminHeaders)
+    .send({ disabled: false });
+  assert.equal(reenabled.status, 200);
+  const revokedAfterReenable = await request(app)
+    .get('/api/auth/me')
+    .set(userHeaders);
+  assert.equal(revokedAfterReenable.status, 401);
 
   const deletedReview = await request(app)
     .delete(`/api/admin/reviews/${reviewId}`)
@@ -288,29 +415,33 @@ test('complete user, inquiry, moderation, and admin flow uses PostgreSQL', async
     .delete(`/api/inquiries/${inquiryId}`)
     .set(adminHeaders);
   assert.equal(deletedInquiry.status, 204);
+  const logout = await request(app).post('/api/auth/logout').set(adminHeaders);
+  assert.equal(logout.status, 204);
+  const loggedOut = await request(app).get('/api/inquiries').set(adminHeaders);
+  assert.equal(loggedOut.status, 401);
 });
 
-test('30-day cleanup handles 305 accounts and inquiries without deleting admins or reviews', async () => {
+test('cleanup retains all old accounts, inquiries, and reviewer information', async () => {
   const { default: pool, cleanupExpiredData } = await import('../src/db.js');
   const { issueToken } = await import('../src/auth.js');
-  const expiredUsers = await pool.query(
-    `INSERT INTO users (name, email, password_hash, role, expires_at)
+  const oldUsers = await pool.query(
+    `INSERT INTO users (name, email, password_hash, role)
      SELECT 'Resident ' || n, 'resident-' || n || '@example.com', 'unused-test-hash',
-            'user', NOW() + INTERVAL '29 days'
+            'user'
      FROM generate_series(1, 305) AS n
      RETURNING id`,
   );
   const review = await pool.query(
-    `INSERT INTO reviews (user_id, author_name, rating, comment, status)
-     VALUES ($1, 'Resident 1', 5, 'Please keep this review after account expiry.', 'approved')
+    `INSERT INTO reviews (user_id, author_name, author_email, rating, comment, status)
+     VALUES ($1, 'Resident 1', 'resident-1@example.com', 5, 'Please keep this old review.', 'approved')
      RETURNING id`,
-    [expiredUsers.rows[0].id],
+    [oldUsers.rows[0].id],
   );
   await pool.query(
-    `INSERT INTO inquiries (name, email, phone, message, created_at, updated_at, expires_at)
+    `INSERT INTO inquiries (name, email, phone, message, created_at, updated_at)
      SELECT 'Resident ' || n, 'resident-' || n || '@example.com', '+91-9876543210',
-            'Expired test inquiry record.', NOW() - INTERVAL '31 days',
-            NOW() - INTERVAL '31 days', NOW() - INTERVAL '1 day'
+            'Long-term inquiry test record.', NOW() - INTERVAL '2 years',
+            NOW() - INTERVAL '2 years'
      FROM generate_series(1, 305) AS n`,
   );
   await pool.query(
@@ -331,43 +462,33 @@ test('30-day cleanup handles 305 accounts and inquiries without deleting admins 
   }
   assert.deepEqual(userPageSizes, [100, 100, 100, 6]);
 
-  await pool.query(
-    `UPDATE users
-     SET expires_at = NOW() - INTERVAL '31 days', disabled_at = NULL
-     WHERE role = 'user'`,
-  );
-  const expiredUser = await pool.query(
-    "SELECT id, auth_version FROM users WHERE email = 'asha@example.com'",
-  );
-  const expiredToken = issueToken({
-    id: expiredUser.rows[0].id,
-    role: 'user',
-    auth_version: expiredUser.rows[0].auth_version,
-  });
-  const expiredAccountAccess = await request(app)
-    .get('/api/auth/me')
-    .set('Authorization', `Bearer ${expiredToken}`);
-  assert.equal(expiredAccountAccess.status, 401);
-  assert.equal(expiredAccountAccess.body.error.code, 'ACCOUNT_EXPIRED');
+  const oldest = new Date(Date.now() - 3 * 365 * 24 * 60 * 60 * 1000).toISOString();
+  const newest = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
+  const historicalSubmissions = await request(app)
+    .get(`/api/inquiries?q=Long-term&status=new&sort=oldest&from=${encodeURIComponent(oldest)}&to=${encodeURIComponent(newest)}&limit=100`)
+    .set('Authorization', `Bearer ${adminToken}`);
+  assert.equal(historicalSubmissions.status, 200);
+  assert.equal(historicalSubmissions.body.inquiries.length, 100);
+  assert.equal(historicalSubmissions.body.pagination.total, 305);
+  assert.ok(new Date(historicalSubmissions.body.inquiries[0].created_at) < new Date(newest));
+
   const cleanup = await cleanupExpiredData();
-  assert.equal(cleanup.users, 306);
-  assert.equal(cleanup.inquiries, 305);
+  assert.deepEqual(cleanup, { passwordResetTokens: 0 });
   const adminCount = await pool.query("SELECT COUNT(*)::int AS count FROM users WHERE role = 'admin'");
   assert.equal(adminCount.rows[0].count, 1);
-  const adminExpiry = await pool.query("SELECT expires_at FROM users WHERE role = 'admin'");
-  assert.equal(adminExpiry.rows[0].expires_at, null);
   const remainingUsers = await pool.query("SELECT COUNT(*)::int AS count FROM users WHERE role = 'user'");
-  assert.equal(remainingUsers.rows[0].count, 0);
+  assert.equal(remainingUsers.rows[0].count, 306);
   const keptReview = await pool.query(
-    'SELECT user_id, author_name, comment, status FROM reviews WHERE id = $1',
+    'SELECT user_id, author_name, author_email, comment, status FROM reviews WHERE id = $1',
     [review.rows[0].id],
   );
-  assert.equal(keptReview.rows[0].user_id, null);
-  assert.equal(keptReview.rows[0].author_name, 'Former resident');
-  assert.equal(keptReview.rows[0].comment, 'Please keep this review after account expiry.');
+  assert.equal(keptReview.rows[0].user_id, oldUsers.rows[0].id);
+  assert.equal(keptReview.rows[0].author_name, 'Resident 1');
+  assert.equal(keptReview.rows[0].author_email, 'resident-1@example.com');
+  assert.equal(keptReview.rows[0].comment, 'Please keep this old review.');
   assert.equal(keptReview.rows[0].status, 'approved');
   const remainingInquiries = await pool.query('SELECT COUNT(*)::int AS count FROM inquiries');
-  assert.equal(remainingInquiries.rows[0].count, 1);
+  assert.equal(remainingInquiries.rows[0].count, 306);
 });
 
 test('malformed JSON receives a client error', async () => {

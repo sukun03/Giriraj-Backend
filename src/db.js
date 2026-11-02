@@ -5,6 +5,11 @@ import pg from 'pg';
 
 const externalUrl = process.env.DATABASE_URL;
 const embedded = !externalUrl;
+if (embedded && (process.env.NODE_ENV === 'production' || process.env.VERCEL === '1')) {
+  throw new Error(
+    'DATABASE_URL is required in production and on Vercel; the embedded database is only for local development.',
+  );
+}
 const embeddedDataDir = path.resolve(process.env.PGLITE_DATA_DIR ?? 'data/postgres');
 if (embedded) {
   await mkdir(path.dirname(embeddedDataDir), { recursive: true });
@@ -13,7 +18,7 @@ const pool = embedded
   ? new PGlite(embeddedDataDir)
   : new pg.Pool({
     connectionString: externalUrl,
-    max: 10,
+    max: process.env.VERCEL === '1' ? 1 : 10,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
   });
@@ -51,6 +56,7 @@ export async function migrate() {
   const migrationFiles = [
     '../database/migrations/001_initial.sql',
     '../database/migrations/002_retention_and_password_resets.sql',
+    '../database/migrations/003_permanent_records_and_single_admin.sql',
   ];
   for (const migrationFile of migrationFiles) {
     const migrationPath = new URL(migrationFile, import.meta.url);
@@ -64,27 +70,8 @@ export async function migrate() {
 }
 
 export async function cleanupExpiredData() {
-  return transaction(async (client) => {
-    await client.query(
-      `UPDATE reviews
-       SET user_id = NULL, author_name = 'Former resident'
-       WHERE user_id IN (
-         SELECT id FROM users
-         WHERE role = 'user' AND expires_at <= NOW()
-       )`,
-    );
-    const expiredUsers = await client.query(
-      "DELETE FROM users WHERE role = 'user' AND expires_at <= NOW()",
-    );
-    const expiredInquiries = await client.query(
-      'DELETE FROM inquiries WHERE expires_at <= NOW()',
-    );
-    await client.query('DELETE FROM password_reset_tokens WHERE expires_at <= NOW()');
-    return {
-      users: expiredUsers.rowCount ?? 0,
-      inquiries: expiredInquiries.rowCount ?? 0,
-    };
-  });
+  const result = await pool.query('DELETE FROM password_reset_tokens WHERE expires_at <= NOW()');
+  return { passwordResetTokens: result.rowCount ?? 0 };
 }
 
 export async function closeDatabase() {

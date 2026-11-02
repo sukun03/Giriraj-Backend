@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run vercel-build",
+  "crons": [
+    {
+      "path": "/api/cron/cleanup",
+      "schedule": "0 0 * * *"
+    }
+  ],
+  "functions": {
+    "src/app.js": {
+      "includeFiles": "src/openapi.yaml"
+    }
+  }
+}

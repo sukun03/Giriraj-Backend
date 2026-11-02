@@ -14,13 +14,28 @@ npm run setup
 npm start
 ```
 
-`npm run setup` writes a `.env` file with unique private signing and administrator-bootstrap secrets. It never overwrites an existing `.env`. Starting the server automatically creates/updates the database schema and runs expired-data cleanup. The local database is persisted under `data/postgres/`.
+`npm run setup` writes a `.env` file with unique private signing, owner-control, and cron secrets. It never overwrites an existing `.env`. Starting the server automatically creates/updates the database schema and removes expired password-reset tokens. The local database is persisted under `data/postgres/`.
 
 - Swagger UI: <http://localhost:3000/api-docs/>
 - OpenAPI JSON: <http://localhost:3000/api-docs.json>
 - Health JSON: <http://localhost:3000/health>
 
 Only REST API and Swagger routes are served by the backend; `/` and frontend asset paths return JSON 404 responses. Stop the server with Ctrl+C. For production or multiple backend instances, use managed PostgreSQL by setting `DATABASE_URL` in the hosting provider's environment; startup automatically applies migrations.
+
+## Deploy to Vercel
+
+Vercel detects the default-exported Express app in `src/app.js` and serves its routes through one serverless function. Vercel's filesystem is ephemeral, so the embedded PostgreSQL database is intentionally rejected there; configure a managed PostgreSQL database before deploying.
+
+1. Import this repository into Vercel with the repository root as the project root. Keep the Node.js version at 20 or newer.
+2. Create a managed PostgreSQL database and add its connection string as `DATABASE_URL` for the Vercel environments you will deploy. Include the provider-required SSL option in the URL (commonly `?sslmode=require`).
+3. Add these Vercel environment variables:
+   - `JWT_SECRET`: a private random secret of at least 32 characters.
+   - `CRON_SECRET`: a private random secret of at least 32 characters; Vercel uses it to authorize scheduled cleanup of expired password-reset tokens.
+   - `CORS_ORIGINS`: the exact deployed React frontend origin, including `https://` and no path. Multiple origins can be comma-separated.
+4. Deploy. The Vercel build validates the environment, applies migrations, and fails clearly if configuration or the database is unavailable.
+5. Create or recover the administrator only through the owner CLI below. There is no public admin-creation or admin-password-reset endpoint.
+
+For password-reset email, also configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM`, and `APP_BASE_URL` as described below. The local `data/postgres/` directory is excluded from Vercel deployments; production data belongs in the managed database.
 
 ## Connect a separate React frontend with Axios
 
@@ -87,18 +102,21 @@ CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 
 Restart the backend after changing the allow-list. Production refuses to start without an explicit allow-list. The API permits JSON REST methods and the `Authorization` header; it does not enable cookie credentials. Do not configure Axios with `withCredentials` for this bearer-token API.
 
-## Admin account and Swagger
+## Owner-controlled administrator credentials
 
-There is no preset administrator email or password. Create the first admin once:
+Public registration only creates regular users. Admin credentials can only be created or changed by running the private CLI from a trusted machine with database access. `OWNER_CONTROL_KEY` is a private secret in the operator's local `.env`; do not add it to Vercel's runtime environment. For a new local setup, `npm run setup` creates it. If `.env` already exists, add a newly generated value (for example, `node -e "console.log(require('node:crypto').randomBytes(48).toString('hex'))"`) rather than replacing your existing secrets. When managing a remote deployment, provide the production `DATABASE_URL` to this local command. Passwords are prompted interactively and are never returned by an API.
 
-1. Open Swagger at `/api-docs/`, expand `POST /api/auth/admin/bootstrap`, and choose **Try it out**.
-2. Copy `ADMIN_BOOTSTRAP_KEY` from the backend `.env` into the `X-Admin-Bootstrap-Key` header field.
-3. Enter the admin name, email, and a private password of at least 12 characters. Execute the request.
-4. Copy `accessToken` from the response, click Swagger's **Authorize** button, paste the token, and confirm.
+```powershell
+npm run admin -- create
+npm run admin -- change-email
+npm run admin -- reset-password
+```
 
-Alternatively, log in with `POST /api/auth/login` and use the returned token. Admin bootstrap is permanently disabled after the first administrator exists. Passwords cannot be retrieved.
+The CLI validates the owner key, enforces one admin account, and revokes existing sessions after changing credentials. To recover a forgotten admin password, run `npm run admin -- reset-password` on a trusted machine with access to the same database. Admin password-reset requests through the public forgot-password flow are deliberately ignored. Admin API routes require a valid bearer token and the database-backed admin role. Log out with `POST /api/auth/logout`; access tokens also expire after 15 minutes.
 
-In Swagger, expand an operation, select **Try it out**, enter the shown JSON example, and click **Execute**. The description at the top explains the first-admin and user/review workflows. The OpenAPI document has request/response examples and schemas for every endpoint.
+Open Swagger at `/api-docs/`, log in using `POST /api/auth/login`, and authorize with the returned access token to try admin operations.
+
+In Swagger, expand an operation, select **Try it out**, enter the shown JSON example, and click **Execute**. The description at the top explains the owner-managed administrator and user/review workflows. The OpenAPI document has request/response examples and schemas for the API endpoints.
 
 ## Email and password reset
 
@@ -129,32 +147,32 @@ Reset tokens are single-use, expire after 30 minutes, and are stored hashed. Res
 | Method | Path | Access | Purpose |
 |---|---|---|---|
 | `GET` | `/health` | Public | Health check |
-| `POST` | `/api/auth/admin/bootstrap` | One-time bootstrap key | Create the first admin |
 | `POST` | `/api/auth/register` | Public | Register a regular account |
 | `POST` | `/api/auth/login` | Public | Sign in |
+| `POST` | `/api/auth/logout` | Signed in | Revoke account sessions |
 | `POST` | `/api/auth/password/forgot` | Public + SMTP | Send a reset email |
 | `POST` | `/api/auth/password/reset` | Public + reset token | Set a new password |
 | `GET` | `/api/auth/me` | Signed in | Read current account |
 | `POST` | `/api/inquiries` | Public | Submit a contact enquiry |
-| `GET`, `GET /:id`, `PUT /:id`, `DELETE /:id` | `/api/inquiries` | Admin | Manage enquiries |
+| `GET`, `GET /:id`, `PUT /:id`, `PATCH /:id/status`, `DELETE /:id` | `/api/inquiries` | Admin | Search, manage, and permanently delete submissions |
 | `GET` | `/api/reviews` | Public | List approved reviews |
-| `POST` | `/api/reviews` | Signed in | Submit a review for moderation |
+| `POST` | `/api/reviews` | Public | Submit a review for moderation |
 | `PUT`, `DELETE` | `/api/reviews/:id` | Owner or admin | Edit/delete a review |
 | `GET` | `/api/admin/reviews` | Admin | List/filter review queue |
 | `PATCH` | `/api/admin/reviews/:id/status` | Admin | Approve or reject a review |
 | `DELETE` | `/api/admin/reviews/:id` | Admin | Delete a review |
-| `GET` | `/api/admin/users` | Admin | List active regular accounts |
+| `GET` | `/api/admin/users` | Admin | List all regular accounts |
 | `PATCH` | `/api/admin/users/:id/disable` | Admin | Disable/re-enable an account |
 
 List endpoints accept `limit` (1–100, default 20) and `offset` (default 0).
 
 ## Data retention and security
 
-- Regular accounts and contact enquiries expire 30 days after creation/submission. Cleanup runs at startup and hourly. Admin accounts never expire or get removed by cleanup.
-- Reviews are never removed by retention cleanup. If their author account expires, the review stays and its author is anonymized as “Former resident.”
+- User accounts, inquiries, and reviews are not automatically expired or deleted. Only an authenticated admin can delete inquiry or review records. Keep managed PostgreSQL backups enabled and test restores; hosting deployments do not provide durable database storage.
+- Inquiry administration supports `q` searches across name, email, phone, and message; `from`/`to` ISO timestamps; `status` (`new`, `contacted`, `resolved`); and `sort` (`newest`, `oldest`). Results are paginated and include a total count.
 - Passwords use bcrypt hashing. Inputs are validated and SQL is parameterized. Admin routes require a live account lookup and admin role, not just a user-supplied role.
-- JWTs expire after 15 minutes. Disabled or expired users and password-reset tokens cannot continue using old sessions.
+- JWTs expire after 15 minutes; logout and owner credential changes revoke active sessions. Admin credentials can only be changed through the owner-controlled CLI.
 - Helmet, exact-origin CORS, payload limits, rate limits, JSON validation errors, and server-side error logging are enabled.
-- The embedded PostgreSQL mode is for local/simple single-instance development. For deployment, use managed PostgreSQL, HTTPS, a strong secret manager, backups, SMTP provider credentials, `NODE_ENV=production`, and the exact React frontend origin in `CORS_ORIGINS`.
+- The embedded PostgreSQL mode is for local/simple single-instance development. For deployment, use managed PostgreSQL, HTTPS, a strong secret manager, backups, SMTP provider credentials, and the exact React frontend origin in `CORS_ORIGINS`. Vercel builds fail unless `DATABASE_URL`, `JWT_SECRET`, `CRON_SECRET`, and `CORS_ORIGINS` are configured.
 
 The API does not include email verification or payment processing.

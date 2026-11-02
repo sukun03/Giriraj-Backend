@@ -10,8 +10,8 @@ router.use(requireAuth, requireAdmin);
 router.get('/users', async (req, res) => {
   const { limit, offset } = pageSchema.parse(req.query);
   const { rows } = await pool.query(
-    `SELECT id, name, email, role, disabled_at, created_at, expires_at
-     FROM users WHERE role = 'user' AND expires_at > NOW()
+    `SELECT id, name, email, role, disabled_at, created_at
+     FROM users WHERE role = 'user'
      ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
     [limit, offset],
   );
@@ -24,9 +24,11 @@ router.patch('/users/:id/disable', async (req, res) => {
     throw new HttpError(400, 'VALIDATION_ERROR', 'disabled must be a boolean.');
   }
   const { rows } = await pool.query(
-    `UPDATE users SET disabled_at = CASE WHEN $1 THEN NOW() ELSE NULL END
+    `UPDATE users
+     SET disabled_at = CASE WHEN $1 THEN NOW() ELSE NULL END,
+         auth_version = auth_version + CASE WHEN $1 THEN 1 ELSE 0 END
      WHERE id = $2 AND role = 'user'
-     RETURNING id, name, email, role, disabled_at, created_at, expires_at`,
+     RETURNING id, name, email, role, disabled_at, created_at`,
     [req.body.disabled, id],
   );
   if (!rows[0]) throw new HttpError(404, 'USER_NOT_FOUND', 'User not found.');
