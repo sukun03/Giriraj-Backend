@@ -54,6 +54,17 @@ test('health endpoint responds', async () => {
   assert.deepEqual(response.body, { status: 'ok' });
 });
 
+test('root endpoint points visitors to API documentation and health check', async () => {
+  const response = await request(app).get('/');
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body, {
+    service: 'Giriraj Boys PG API',
+    documentation: '/api-docs/',
+    openapi: '/api-docs.json',
+    health: '/health',
+  });
+});
+
 test('Vercel serverless entrypoint serves the Express application', async () => {
   const { default: handler } = await import('../src/app.js');
   assert.equal(handler, app);
@@ -80,6 +91,7 @@ test('Swagger JSON and interactive UI are served', async () => {
   assert.equal(specification.status, 200);
   assert.equal(specification.body.openapi, '3.0.3');
   assert.equal(specification.body.info.title, 'Giriraj Boys PG API');
+  assert.ok(specification.body.paths['/']);
   assert.ok(specification.body.paths['/api/inquiries']);
   assert.ok(specification.body.paths['/api/auth/password/forgot']);
   assert.ok(specification.body.paths['/api/auth/password/reset']);
@@ -105,7 +117,7 @@ test('only REST API and Swagger routes are exposed; frontend origins are allow-l
     .set('Origin', 'https://untrusted.example');
   assert.equal(untrusted.headers['access-control-allow-origin'], undefined);
 
-  for (const route of ['/', '/index.html', '/styles.css', '/app.js', '/reset-password.html']) {
+  for (const route of ['/index.html', '/styles.css', '/app.js', '/reset-password.html']) {
     const response = await request(app).get(route);
     assert.equal(response.status, 404, `${route} should not serve a frontend page`);
     assert.equal(response.headers['content-type'].split(';')[0], 'application/json');

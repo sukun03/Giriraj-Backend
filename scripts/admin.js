@@ -30,6 +30,7 @@ try {
 
   const database = await import('../src/db.js');
   closeDatabase = database.closeDatabase;
+  const { migrate } = database;
   const {
     changeAdminEmail,
     createAdminAccount,

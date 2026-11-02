@@ -116,6 +116,13 @@ app.use('/api/reviews', rateLimit({
   skip: (req) => req.method !== 'POST',
 }));
 
+app.get('/', (req, res) => res.json({
+  service: 'Giriraj Boys PG API',
+  documentation: '/api-docs/',
+  openapi: '/api-docs.json',
+  health: '/health',
+}));
+
 app.get('/health', async (req, res) => {
   await pool.query('SELECT 1');
   return res.json({ status: 'ok' });

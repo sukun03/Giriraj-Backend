@@ -35,6 +35,21 @@ tags:
   - name: Reviews
   - name: Administration
 paths:
+  /:
+    get:
+      summary: Get API service links
+      responses:
+        '200':
+          description: API entry point and useful routes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service: { type: string, example: Giriraj Boys PG API }
+                  documentation: { type: string, example: /api-docs/ }
+                  openapi: { type: string, example: /api-docs.json }
+                  health: { type: string, example: /health }
   /health:
     get:
       summary: Check API health

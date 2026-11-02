@@ -3,11 +3,11 @@ import path from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 
-const externalUrl = process.env.DATABASE_URL;
+const externalUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
 const embedded = !externalUrl;
 if (embedded && (process.env.NODE_ENV === 'production' || process.env.VERCEL === '1')) {
   throw new Error(
-    'DATABASE_URL is required in production and on Vercel; the embedded database is only for local development.',
+    'Set DATABASE_URL or POSTGRES_URL in production and on Vercel; the embedded database is only for local development.',
   );
 }
 const embeddedDataDir = path.resolve(process.env.PGLITE_DATA_DIR ?? 'data/postgres');

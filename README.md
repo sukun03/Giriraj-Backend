@@ -20,14 +20,14 @@ npm start
 - OpenAPI JSON: <http://localhost:3000/api-docs.json>
 - Health JSON: <http://localhost:3000/health>
 
-Only REST API and Swagger routes are served by the backend; `/` and frontend asset paths return JSON 404 responses. Stop the server with Ctrl+C. For production or multiple backend instances, use managed PostgreSQL by setting `DATABASE_URL` in the hosting provider's environment; startup automatically applies migrations.
+The root URL returns API links; it does not serve the React frontend. Frontend asset paths return JSON 404 responses. Stop the server with Ctrl+C. For production or multiple backend instances, use managed PostgreSQL by setting `DATABASE_URL` in the hosting provider's environment; startup automatically applies migrations.
 
 ## Deploy to Vercel
 
 Vercel detects the default-exported Express app in `src/app.js` and serves its routes through one serverless function. Vercel's filesystem is ephemeral, so the embedded PostgreSQL database is intentionally rejected there; configure a managed PostgreSQL database before deploying.
 
 1. Import this repository into Vercel with the repository root as the project root. Keep the Node.js version at 20 or newer.
-2. Create a managed PostgreSQL database and add its connection string as `DATABASE_URL` for the Vercel environments you will deploy. Include the provider-required SSL option in the URL (commonly `?sslmode=require`).
+2. Create a managed PostgreSQL database and add its connection string as `DATABASE_URL` for the Vercel environments you will deploy. If your Vercel database integration supplies `POSTGRES_URL` instead, the backend accepts that variable too. Include the provider-required SSL option in the URL (commonly `?sslmode=require`).
 3. Add these Vercel environment variables:
    - `JWT_SECRET`: a private random secret of at least 32 characters.
    - `CRON_SECRET`: a private random secret of at least 32 characters; Vercel uses it to authorize scheduled cleanup of expired password-reset tokens.
@@ -36,6 +36,8 @@ Vercel detects the default-exported Express app in `src/app.js` and serves its r
 5. Create or recover the administrator only through the owner CLI below. There is no public admin-creation or admin-password-reset endpoint.
 
 For password-reset email, also configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM`, and `APP_BASE_URL` as described below. The local `data/postgres/` directory is excluded from Vercel deployments; production data belongs in the managed database.
+
+If a deployment shows `FUNCTION_INVOCATION_FAILED`, check its Vercel runtime logs for the startup error. The required database and secrets must be set for the deployed environment, then the project must be redeployed after changing environment variables. A successful build logs that migrations completed; test `/health` and `/api-docs/` on the deployed URL.
 
 ## Connect a separate React frontend with Axios
 
@@ -173,6 +175,6 @@ List endpoints accept `limit` (1–100, default 20) and `offset` (default 0).
 - Passwords use bcrypt hashing. Inputs are validated and SQL is parameterized. Admin routes require a live account lookup and admin role, not just a user-supplied role.
 - JWTs expire after 15 minutes; logout and owner credential changes revoke active sessions. Admin credentials can only be changed through the owner-controlled CLI.
 - Helmet, exact-origin CORS, payload limits, rate limits, JSON validation errors, and server-side error logging are enabled.
-- The embedded PostgreSQL mode is for local/simple single-instance development. For deployment, use managed PostgreSQL, HTTPS, a strong secret manager, backups, SMTP provider credentials, and the exact React frontend origin in `CORS_ORIGINS`. Vercel builds fail unless `DATABASE_URL`, `JWT_SECRET`, `CRON_SECRET`, and `CORS_ORIGINS` are configured.
+- The embedded PostgreSQL mode is for local/simple single-instance development. For deployment, use managed PostgreSQL, HTTPS, a strong secret manager, backups, SMTP provider credentials, and the exact React frontend origin in `CORS_ORIGINS`. Vercel builds fail unless `DATABASE_URL` (or `POSTGRES_URL`), `JWT_SECRET`, `CRON_SECRET`, and `CORS_ORIGINS` are configured.
 
 The API does not include email verification or payment processing.

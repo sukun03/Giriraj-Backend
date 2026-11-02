@@ -2,8 +2,8 @@ import 'dotenv/config';
 
 process.env.NODE_ENV = 'production';
 
-if (!process.env.DATABASE_URL) {
-  throw new Error('Set DATABASE_URL in the Vercel build environment.');
+if (!process.env.DATABASE_URL && !process.env.POSTGRES_URL) {
+  throw new Error('Set DATABASE_URL or POSTGRES_URL in the Vercel build environment.');
 }
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
   throw new Error('Set JWT_SECRET to a private secret of at least 32 characters in Vercel.');
