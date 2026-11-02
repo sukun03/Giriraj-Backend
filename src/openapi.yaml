@@ -1,0 +1,665 @@
+openapi: 3.0.3
+info:
+  title: Giriraj Boys PG API
+  version: 1.0.0
+  description: |
+    ## Welcome
+    This is the HTTP API for a paying-guest accommodation website. Every request and
+    response uses JSON unless the response is empty (HTTP 204). Expand an endpoint,
+    select **Try it out**, enter the example data, and select **Execute**.
+
+    ## First-time setup
+    1. Run `npm run setup`, then `npm start` in the project directory.
+    2. Open `/api/auth/admin/bootstrap`. Copy `ADMIN_BOOTSTRAP_KEY` from the local
+       server `.env` file into the `X-Admin-Bootstrap-Key` header field.
+    3. Enter the admin name, email, and a unique password of at least 12 characters.
+       Bootstrap works only once; it is disabled after the first admin is created.
+    4. Copy `accessToken` from the successful response. Click **Authorize** above,
+       paste the token, and confirm. Admin-only operations will now be authorized.
+
+    ## Try the normal user flow
+    Submit a contact form with public `POST /api/inquiries`; it does not need a token.
+    Register with `POST /api/auth/register` or sign in with `POST /api/auth/login`.
+    Authorize with the returned access token to submit a review. Reviews begin as
+    pending and only appear in the public list after an admin approves them.
+
+    Access tokens expire after 15 minutes. Sign in again to get a fresh token.
+    Configure SMTP_HOST, SMTP_PORT, and EMAIL_FROM in `.env` to enable password reset.
+    Normal accounts and contact enquiries expire 30 days after they are created.
+    Admin accounts and all reviews are retained; when an account expires, its review
+    remains but its author is anonymized as "Former resident". Pagination uses `limit` (1–100,
+    default 20) and `offset` (default 0). Error responses use the documented `error`
+    object; validation errors include a `details` array.
+servers:
+  - url: /
+    description: This backend's current host (local or deployed).
+tags:
+  - name: Authentication
+  - name: Inquiries
+  - name: Reviews
+  - name: Administration
+paths:
+  /health:
+    get:
+      summary: Check API health
+      responses:
+        '200':
+          description: API is running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+  /api/auth/register:
+    post:
+      tags: [Authentication]
+      summary: Register a normal user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+            example:
+              name: Asha Kumar
+              email: asha@example.com
+              password: "A-strong-password-123"
+      responses:
+        '201':
+          description: Account created; token returned
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+      security: []
+  /api/auth/login:
+    post:
+      tags: [Authentication]
+      summary: Sign in and receive a bearer token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+            example:
+              email: asha@example.com
+              password: "A-strong-password-123"
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+      security: []
+  /api/auth/password/forgot:
+    post:
+      tags: [Authentication]
+      summary: Email a single-use password reset link
+      description: Requires SMTP settings in the server .env. The link expires after 30 minutes. The same 202 response is returned whether or not an active account uses the email address.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ForgotPasswordRequest' }
+            example:
+              email: asha@example.com
+      responses:
+        '202':
+          description: A reset email was sent if an active account exists.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ForgotPasswordResponse' }
+              example:
+                message: If an active account exists for that email, a password reset link has been sent.
+                resetLinkExpiresIn: 1800
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '503':
+          description: SMTP is missing or the reset email could not be delivered.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+      security: []
+  /api/auth/password/reset:
+    post:
+      tags: [Authentication]
+      summary: Set a new password using the emailed token
+      description: Tokens expire after 30 minutes and can be used once. Resetting a password invalidates the account's existing access tokens.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResetPasswordRequest' }
+            example:
+              token: paste-the-token-from-your-reset-email
+              password: "A-new-strong-password-123"
+      responses:
+        '200':
+          description: Password changed; sign in using the new password.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResetPasswordResponse' }
+              example:
+                message: Password reset successfully. Sign in with your new password.
+        '400': { $ref: '#/components/responses/BadRequest' }
+      security: []
+  /api/auth/admin/bootstrap:
+    post:
+      tags: [Authentication]
+      summary: Create the first admin only
+      description: Requires the X-Admin-Bootstrap-Key value in the server .env file. Use the resulting accessToken with Swagger's Authorize button. This operation permanently fails after an admin exists.
+      parameters:
+        - in: header
+          name: X-Admin-Bootstrap-Key
+          required: true
+          schema: { type: string }
+          example: set-this-in-your-server-environment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+            example:
+              name: Site Admin
+              email: admin@example.com
+              password: "Use-a-unique-password-123"
+      responses:
+        '201':
+          description: First administrator created. Save the returned token to use admin endpoints.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+              example:
+                user:
+                  id: "1"
+                  name: Site Admin
+                  email: admin@example.com
+                  role: admin
+                  createdAt: "2026-11-02T10:00:00.000Z"
+                accessToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.example
+                tokenType: Bearer
+                expiresIn: 900
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: An admin already exists
+      security: []
+  /api/auth/me:
+    get:
+      tags: [Authentication]
+      summary: Get the current account
+      description: Returns the account associated with the bearer token. The token must be valid and the account must still be active.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Current active account
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/PublicUser' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/inquiries:
+    post:
+      tags: [Inquiries]
+      summary: Submit the website contact form
+      description: Public endpoint. Inquiry data is automatically removed after 30 days.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InquiryInput' }
+            example:
+              name: Riya Sharma
+              email: riya@example.com
+              phone: "+91-9876543210"
+              message: "I would like to know whether a single room is available from December."
+      responses:
+        '201':
+          description: Inquiry saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InquiryResponse' }
+              example:
+                inquiry:
+                  id: "14"
+                  name: Riya Sharma
+                  email: riya@example.com
+                  phone: "+91-9876543210"
+                  message: "I would like to know whether a single room is available from December."
+                  created_at: "2026-11-02T10:00:00.000Z"
+                  expires_at: "2026-12-02T10:00:00.000Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+      security: []
+    get:
+      tags: [Inquiries]
+      summary: List unexpired inquiries (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+      responses:
+        '200':
+          description: Paginated list of inquiries that have not expired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InquiryPage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/inquiries/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Inquiries]
+      summary: Read an inquiry (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Inquiry details
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InquiryResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Inquiries]
+      summary: Replace an inquiry (admin)
+      description: Send all inquiry fields; this replaces the saved values without extending the original 30-day expiration.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InquiryInput' }
+      responses:
+        '200':
+          description: Updated inquiry
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InquiryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    delete:
+      tags: [Inquiries]
+      summary: Delete an inquiry immediately (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/reviews:
+    get:
+      tags: [Reviews]
+      summary: List approved public reviews
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+      responses:
+        '200':
+          description: Approved public reviews
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicReviewPage' }
+      security: []
+    post:
+      tags: [Reviews]
+      summary: Submit a review (signed-in user)
+      description: New reviews are pending until an administrator approves them.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewInput' }
+            example:
+              rating: 5
+              comment: "The rooms are clean, and the staff are very helpful."
+      responses:
+        '201':
+          description: Review submitted for moderation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/reviews/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    put:
+      tags: [Reviews]
+      summary: Edit your review (admin can edit any review)
+      description: Editing your own review returns it to pending moderation.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewInput' }
+      responses:
+        '200':
+          description: Updated review
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Reviews]
+      summary: Delete your own review or any review as admin
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/admin/reviews:
+    get:
+      tags: [Administration]
+      summary: List reviews including pending/rejected (admin)
+      description: Omit status to list all reviews, or filter by pending, approved, or rejected.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+        - in: query
+          name: status
+          schema: { type: string, enum: [pending, approved, rejected] }
+      responses:
+        '200':
+          description: Paginated review moderation queue
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminReviewPage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/admin/reviews/{id}/status:
+    patch:
+      tags: [Administration]
+      summary: Approve or reject a review (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [pending, approved, rejected] }
+            example: { status: approved }
+      responses:
+        '200':
+          description: Review status updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/admin/reviews/{id}:
+    delete:
+      tags: [Administration]
+      summary: Delete any review (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/admin/users:
+    get:
+      tags: [Administration]
+      summary: List registered users (admin)
+      description: Returns active, unexpired user accounts. Expired users are removed automatically; administrator accounts are permanent and are not listed here.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+      responses:
+        '200':
+          description: Paginated user list
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPage' }
+  /api/admin/users/{id}/disable:
+    patch:
+      tags: [Administration]
+      summary: Disable or re-enable a user account (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [disabled]
+              properties:
+                disabled: { type: boolean }
+            example: { disabled: true }
+      responses:
+        '200':
+          description: Account state updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/AdminUser' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Id:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, pattern: '^[0-9]+$' }
+    Limit:
+      in: query
+      name: limit
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Offset:
+      in: query
+      name: offset
+      schema: { type: integer, minimum: 0, default: 0 }
+  schemas:
+    RegisterRequest:
+      type: object
+      required: [name, email, password]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        email: { type: string, format: email, maxLength: 254 }
+        password:
+          type: string
+          format: password
+          minLength: 12
+          maxLength: 72
+          description: Use at least 12 characters.
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+    ForgotPasswordRequest:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string, format: email, example: asha@example.com }
+    ForgotPasswordResponse:
+      type: object
+      properties:
+        message: { type: string }
+        resetLinkExpiresIn: { type: integer, description: Seconds until the link expires, example: 1800 }
+    ResetPasswordRequest:
+      type: object
+      required: [token, password]
+      properties:
+        token: { type: string, minLength: 43, maxLength: 43, description: Single-use token from the email link }
+        password:
+          type: string
+          format: password
+          minLength: 12
+          maxLength: 72
+    ResetPasswordResponse:
+      type: object
+      properties:
+        message: { type: string }
+    InquiryInput:
+      type: object
+      required: [name, email, phone, message]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        email: { type: string, format: email, maxLength: 254 }
+        phone: { type: string, minLength: 5, maxLength: 30, example: "+91-9876543210" }
+        message: { type: string, minLength: 10, maxLength: 3000 }
+    ReviewInput:
+      type: object
+      required: [rating, comment]
+      properties:
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        comment: { type: string, minLength: 5, maxLength: 2000 }
+    AuthResponse:
+      type: object
+      properties:
+        user:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            email: { type: string }
+            role: { type: string, enum: [user, admin] }
+        accessToken: { type: string }
+        tokenType: { type: string, example: Bearer }
+        expiresIn: { type: integer, example: 900 }
+    PublicUser:
+      type: object
+      properties:
+        id: { type: string, example: "1" }
+        name: { type: string, example: Asha Kumar }
+        email: { type: string, format: email, example: asha@example.com }
+        role: { type: string, enum: [user, admin] }
+        createdAt: { type: string, format: date-time }
+    AdminUser:
+      type: object
+      properties:
+        id: { type: string, example: "2" }
+        name: { type: string, example: Asha Kumar }
+        email: { type: string, format: email, example: asha@example.com }
+        role: { type: string, example: user }
+        disabled_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, nullable: true, description: Null for administrators; 30 days after registration for regular users. }
+    Inquiry:
+      type: object
+      properties:
+        id: { type: string, example: "14" }
+        name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string }
+        message: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, description: Automatically 30 days after submission. }
+    InquiryResponse:
+      type: object
+      properties:
+        inquiry: { $ref: '#/components/schemas/Inquiry' }
+    Pagination:
+      type: object
+      properties:
+        limit: { type: integer, example: 20 }
+        offset: { type: integer, example: 0 }
+    InquiryPage:
+      type: object
+      properties:
+        inquiries:
+          type: array
+          items: { $ref: '#/components/schemas/Inquiry' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+    PublicReview:
+      type: object
+      properties:
+        id: { type: string, example: "8" }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        comment: { type: string }
+        created_at: { type: string, format: date-time }
+        author: { type: string, example: Asha Kumar }
+    PublicReviewPage:
+      type: object
+      properties:
+        reviews:
+          type: array
+          items: { $ref: '#/components/schemas/PublicReview' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+    Review:
+      type: object
+      properties:
+        id: { type: string, example: "8" }
+        user_id: { type: string, example: "2" }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        comment: { type: string }
+        status: { type: string, enum: [pending, approved, rejected] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ReviewResponse:
+      type: object
+      properties:
+        review: { $ref: '#/components/schemas/Review' }
+    AdminReview:
+      allOf:
+        - { $ref: '#/components/schemas/Review' }
+        - type: object
+          properties:
+            author: { type: string }
+            author_email: { type: string, format: email }
+    AdminReviewPage:
+      type: object
+      properties:
+        reviews:
+          type: array
+          items: { $ref: '#/components/schemas/AdminReview' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+    UserPage:
+      type: object
+      properties:
+        users:
+          type: array
+          items: { $ref: '#/components/schemas/AdminUser' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+  responses:
+    BadRequest:
+      description: Invalid request data
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Request data is invalid.
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Authenticated user is not allowed to perform this action
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Record conflicts with existing data
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Record not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
